@@ -1,0 +1,95 @@
+# Scenario suite for cascade-example-artifact-b.
+# Validates: build callback invocation, External Update dispatch to primary,
+# and state write via CASCADE_STATE_TOKEN.
+# Trigger manually or on schedule; never runs automatically on push.
+name: Scenario Suite
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print steps without executing
+        required: false
+        default: "false"
+        type: string
+  schedule:
+    - cron: "0 6 * * 1"
+  repository_dispatch:
+    types:
+      - run-scenario-suite
+
+jobs:
+  build:
+    name: Build widget-b
+    uses: ./.github/workflows/build-widget.yaml
+    with:
+      environment: ci
+      sha: ${{ github.sha }}
+      version: "0.0.0-suite"
+
+  dispatch-and-assert:
+    name: Dispatch and Assert
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    steps:
+      - name: Assert artifact output
+        env:
+          ARTIFACT_NAME: ${{ needs.build.outputs.artifact_name }}
+        run: |
+          if [ -z "${ARTIFACT_NAME}" ]; then
+            echo "::error::build job produced no artifact_name output"
+            exit 1
+          fi
+          echo "artifact_name=${ARTIFACT_NAME}"
+
+      - name: Dispatch External Update on primary
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          gh api repos/stablekernel/cascade-example-primary/dispatches \
+            -X POST \
+            -f event_type=external-update \
+            -f "client_payload[source]=widget-b" \
+            -f "client_payload[sha]=${SHA}" \
+            -f "client_payload[version]=0.0.0-suite"
+          echo "Dispatched external-update to stablekernel/cascade-example-primary"
+
+      - name: Poll for primary acknowledgement
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+        run: |
+          MAX=20
+          COUNT=0
+          while [ "$COUNT" -lt "$MAX" ]; do
+            STATUS=$(gh api repos/stablekernel/cascade-example-primary/actions/workflows/external-update.yaml/runs \
+              --jq '.workflow_runs[0].status' 2>/dev/null || echo "unknown")
+            echo "attempt ${COUNT}: primary external-update status=${STATUS}"
+            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "in_progress" ]; then
+              echo "Primary acknowledged dispatch."
+              exit 0
+            fi
+            COUNT=$((COUNT + 1))
+            sleep 15
+          done
+          echo "::error::Primary did not acknowledge External Update dispatch within timeout"
+          exit 1
+
+  summary:
+    name: Suite Summary
+    runs-on: ubuntu-latest
+    needs: [build, dispatch-and-assert]
+    if: always()
+    steps:
+      - name: Write summary
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          DISPATCH_RESULT: ${{ needs.dispatch-and-assert.result }}
+        run: |
+          echo "## cascade-example-artifact-b Scenario Suite" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Stage | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| build | ${BUILD_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| dispatch-and-assert | ${DISPATCH_RESULT} |" >> "$GITHUB_STEP_SUMMARY"

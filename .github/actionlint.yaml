@@ -1,0 +1,12 @@
+# Suppress style-only and inference-only nits in the cascade-generated workflows.
+# SC2129 and SC2001 are shellcheck style suggestions that do not affect correctness.
+# The run_build_widget_b property is emitted at runtime by the cascade CLI via
+# --gha-output, so actionlint cannot see it during static analysis.
+self-hosted-runner:
+  labels: []
+paths:
+  .github/workflows/**:
+    ignore:
+      - 'shellcheck reported issue.+SC2129'
+      - 'shellcheck reported issue.+SC2001'
+      - 'property "run_build_widget_b" is not defined'

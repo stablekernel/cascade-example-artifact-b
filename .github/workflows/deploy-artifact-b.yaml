@@ -1,0 +1,41 @@
+# Stub deploy callback for widget-b. Referenced by the primary repo's external deploys.
+# Callers: cascade orchestrate job via uses: stablekernel/cascade-example-artifact-b/.github/workflows/deploy-artifact-b.yaml@main
+name: Deploy Widget B
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target environment
+        required: false
+        type: string
+      sha:
+        description: Commit SHA to deploy
+        required: false
+        type: string
+      version:
+        description: Semantic version to deploy
+        required: false
+        type: string
+    outputs:
+      deploy_url:
+        description: URL of the deployed artifact
+        value: ${{ jobs.deploy.outputs.deploy_url }}
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_url: ${{ steps.deploy.outputs.deploy_url }}
+    steps:
+      - name: Deploy
+        id: deploy
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          SHA: ${{ inputs.sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "Deploying widget-b version=${VERSION:-dev} sha=${SHA:-local} env=${ENVIRONMENT}"
+          sleep 2
+          echo "deploy_url=https://example.com/widget-b/${ENVIRONMENT}/${SHA:-local}" >> "$GITHUB_OUTPUT"

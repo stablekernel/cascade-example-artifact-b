@@ -1,0 +1,50 @@
+# Stub build callback that echoes inputs and produces the widget-b artifact.
+# Callers: cascade orchestrate job via uses: stablekernel/cascade-example-artifact-b/.github/workflows/build-widget.yaml@main
+name: Build Widget B
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target environment
+        required: false
+        type: string
+      sha:
+        description: Commit SHA to build
+        required: false
+        type: string
+      version:
+        description: Semantic version to stamp
+        required: false
+        type: string
+    outputs:
+      artifact_name:
+        description: Name of the uploaded GHA artifact
+        value: ${{ jobs.build.outputs.artifact_name }}
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.stamp.outputs.artifact_name }}
+    steps:
+      - name: Stamp
+        id: stamp
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          SHA: ${{ inputs.sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "environment=${ENVIRONMENT}"
+          echo "sha=${SHA}"
+          echo "version=${VERSION}"
+          ARTIFACT="widget-b-${VERSION:-dev}-${SHA:-local}"
+          echo "artifact_name=${ARTIFACT}" >> "$GITHUB_OUTPUT"
+          sleep 2
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stamp.outputs.artifact_name }}
+          path: /dev/null
+          if-no-files-found: ignore
