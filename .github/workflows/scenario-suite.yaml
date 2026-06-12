@@ -1,6 +1,6 @@
 # Scenario suite for cascade-example-artifact-b.
 # Validates: build callback invocation, External Update dispatch to primary,
-# and state write via CASCADE_STATE_TOKEN.
+# and state write via CASCADE_STATE_TEST_TOKEN.
 # Trigger manually or on schedule; never runs automatically on push.
 name: Scenario Suite
 
@@ -46,7 +46,7 @@ jobs:
 
       - name: Dispatch External Update on primary
         env:
-          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
           SHA: ${{ github.sha }}
         run: |
           gh api repos/stablekernel/cascade-example-primary/dispatches \
@@ -59,7 +59,7 @@ jobs:
 
       - name: Poll for primary acknowledgement
         env:
-          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
         run: |
           MAX=20
           COUNT=0
