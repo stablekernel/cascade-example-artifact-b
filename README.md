@@ -19,7 +19,7 @@ This repo builds a widget-b artifact and notifies the primary pipeline (`stablek
 
 ## Secrets
 
-`CASCADE_STATE_TOKEN` is a fine-grained PAT with Contents RW and Actions RW on the cascade-example fleet repos.
+`CASCADE_STATE_TEST_TOKEN` is a fine-grained PAT with Contents RW and Actions RW on the cascade-example fleet repos.
 
 ## Scenario suite
 
