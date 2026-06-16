@@ -29,12 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
-      run_build_widget-b: ${{ steps.setup.outputs.run_build_widget-b }}
+      run_build_widget_b: ${{ steps.setup.outputs.run_build_widget_b }}
       head_sha: ${{ steps.setup.outputs.head_sha }}
       version: ${{ steps.setup.outputs.version }}
       previous_tag: ${{ steps.setup.outputs.previous_tag }}
       changelog_base_sha: ${{ steps.setup.outputs.changelog_base_sha }}
-      base_build_widget-b: ${{ steps.setup.outputs.base_build_widget-b }}
+      base_build_widget_b: ${{ steps.setup.outputs.base_build_widget_b }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -59,7 +59,6 @@ jobs:
     uses: ./.github/workflows/build-widget.yaml
     with:
       sha: ${{ needs.setup.outputs.head_sha }}
-    secrets: inherit
 
   finalize:
     name: Finalize
