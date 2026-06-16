@@ -127,7 +127,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: Update Manifest
         env:
-          GH_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
           HEAD_SHA: ${{ needs.setup.outputs.head_sha }}
           VERSION: ${{ needs.setup.outputs.version }}
         run: |
@@ -207,7 +207,7 @@ jobs:
       - name: Notify Primary Repo
         uses: actions/github-script@v7
         with:
-          github-token: CASCADE_STATE_TEST_TOKEN
+          github-token: CASCADE_STATE_TOKEN
           script: |
             // Collect deploy outputs for artifacts
             const artifacts = {};
