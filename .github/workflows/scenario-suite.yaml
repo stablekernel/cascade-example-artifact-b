@@ -19,35 +19,94 @@ on:
       - run-scenario-suite
 
 jobs:
-  build:
-    name: Build widget-b
-    uses: ./.github/workflows/build-widget.yaml
-    with:
-      environment: ci
-      sha: ${{ github.sha }}
-      version: "0.0.0-suite"
+  seed:
+    name: Seed src change via PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+      pull-requests: write
+    outputs:
+      merge_sha: ${{ steps.merge.outputs.merge_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create branch, commit src change, open and merge PR
+        id: merge
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  "scenario-suite"
+          git config user.email "scenario-suite@users.noreply.github.com"
+
+          BRANCH="scenario/src-$(date +%s)-$RANDOM"
+          git fetch origin main --quiet
+          git checkout -B "$BRANCH" origin/main
+
+          mkdir -p src
+          echo "scenario change $(date -u +%FT%TWZ)" >> src/scenario.txt
+          git add src/scenario.txt
+          git commit -m "feat: scenario source change"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "feat: scenario source change" \
+            --body "Automated scenario run; drives orchestrate on merge."
+          gh pr merge "$BRANCH" --squash --delete-branch
+
+          git fetch origin main --quiet
+          MERGE_SHA="$(git rev-parse origin/main)"
+          echo "merge_sha=${MERGE_SHA}" >> "$GITHUB_OUTPUT"
+
+  wait-build:
+    name: Wait for orchestrate run
+    runs-on: ubuntu-latest
+    needs: [seed]
+    permissions:
+      actions: write
+    steps:
+      - name: Wait for orchestrate run keyed on merge SHA
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
+          MERGE_SHA: ${{ needs.seed.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          RUN_ID=""
+          for i in $(seq 1 30); do
+            RUN_ID="$(gh run list \
+              --repo stablekernel/cascade-example-artifact-b \
+              --workflow=orchestrate.yaml \
+              --branch=main \
+              --json databaseId,headSha,status \
+              --jq ".[] | select(.headSha==\"${MERGE_SHA}\") | .databaseId" | head -n1)"
+            [ -n "$RUN_ID" ] && break
+            sleep 10
+          done
+          [ -n "$RUN_ID" ] || { echo "::error::no orchestrate run for ${MERGE_SHA}"; exit 1; }
+          gh run watch "$RUN_ID" \
+            --repo stablekernel/cascade-example-artifact-b \
+            --exit-status
 
   dispatch-and-assert:
     name: Dispatch and Assert
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [seed, wait-build]
     permissions:
       contents: read
     steps:
-      - name: Assert artifact output
-        env:
-          ARTIFACT_NAME: ${{ needs.build.outputs.artifact_name }}
+      - name: Assert orchestrate completed
         run: |
-          if [ -z "${ARTIFACT_NAME}" ]; then
-            echo "::error::build job produced no artifact_name output"
-            exit 1
-          fi
-          echo "artifact_name=${ARTIFACT_NAME}"
+          echo "orchestrate run for ${{ needs.seed.outputs.merge_sha }} passed"
 
       - name: Dispatch External Update on primary
         env:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.seed.outputs.merge_sha }}
         run: |
           gh api repos/stablekernel/cascade-example-primary/dispatches \
             -X POST \
@@ -80,16 +139,18 @@ jobs:
   summary:
     name: Suite Summary
     runs-on: ubuntu-latest
-    needs: [build, dispatch-and-assert]
+    needs: [seed, wait-build, dispatch-and-assert]
     if: always()
     steps:
       - name: Write summary
         env:
-          BUILD_RESULT: ${{ needs.build.result }}
+          SEED_RESULT: ${{ needs.seed.result }}
+          WAIT_RESULT: ${{ needs.wait-build.result }}
           DISPATCH_RESULT: ${{ needs.dispatch-and-assert.result }}
         run: |
           echo "## cascade-example-artifact-b Scenario Suite" >> "$GITHUB_STEP_SUMMARY"
           echo "| Stage | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| build | ${BUILD_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| seed | ${SEED_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| wait-build | ${WAIT_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| dispatch-and-assert | ${DISPATCH_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
