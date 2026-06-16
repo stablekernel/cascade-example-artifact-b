@@ -16,4 +16,9 @@ ci:
       repo: stablekernel/cascade-example-primary
       workflow: external-update.yaml
       token: CASCADE_STATE_TOKEN
-  state: {}
+  state:
+    prerelease:
+      sha: 7a251f0c1d4ca710a9a5799b097edd51f06627c9
+      version: v0.1.0-rc.0
+      committed_at: "2026-06-16T23:08:43Z"
+      committed_by: joshua-temple
