@@ -222,6 +222,52 @@ jobs:
           fi
           echo "OK: sentinel $SENTINEL landed verbatim in primary state.$PRIMARY_ENV.external.$PRIMARY_DEPLOY_NAME (repo=$GOT_REPO)"
 
+          # cascade #213 deploy-on-update: the primary external[].deploys[].on_update.deploy
+          # block makes the receiver run a scoped deploy_<deploy_name> job in the SAME
+          # external-update run after recording the update. Assert that scoped deploy
+          # actually ran and succeeded - record-only would skip it.
+          #
+          # Deterministic correlation: our --sha is the UNIQUE sentinel, and the
+          # receiver run carries it in its displayTitle, so we resolve OUR receiver
+          # run id by that sentinel (never latest-run, never log-grep). The sentinel
+          # already landed verbatim above, so the run provably exists; failing to
+          # resolve it is a hard error.
+          RECEIVER_RUN_ID=""
+          for i in $(seq 1 5); do
+            RECEIVER_RUN_ID="$(gh run list --repo "$PRIMARY_REPO" --workflow=external-update.yaml \
+              --branch=main --created=">=$DISPATCH_SINCE" --limit=20 \
+              --json databaseId,displayTitle \
+              --jq 'map(select(.displayTitle | contains("'"$SENTINEL"'"))) | .[0].databaseId // empty')"
+            [ -n "$RECEIVER_RUN_ID" ] && break
+            echo "attempt $i: receiver run carrying sentinel $SENTINEL not yet listable"
+            sleep 60
+          done
+          if [ -z "$RECEIVER_RUN_ID" ]; then
+            echo "::error::deploy-on-update (#213): could not resolve receiver external-update run for sentinel $SENTINEL; expected a run whose displayTitle contains the sentinel, got none"
+            exit 1
+          fi
+          echo "Receiver external-update run for deploy assertion: $RECEIVER_RUN_ID"
+
+          # Let the receiver run (update + scoped deploy_<name>) finish before reading
+          # job conclusions; watch is the completion gate, not the correctness gate.
+          gh run watch "$RECEIVER_RUN_ID" --repo "$PRIMARY_REPO" --interval 60 || \
+            echo "note: watch on receiver $RECEIVER_RUN_ID returned non-zero; asserting job conclusion directly"
+
+          # Assert the scoped deploy job for THIS component exists in the receiver run
+          # and concluded success. The generator emits job id deploy_<deploy_name> with
+          # name "Deploy <deploy_name>" (internal/generate/external.go writeDeployJob).
+          DEPLOY_CONCLUSION="$(gh run view "$RECEIVER_RUN_ID" --repo "$PRIMARY_REPO" --json jobs \
+            --jq '.jobs[] | select(.name | startswith("Deploy '"$PRIMARY_DEPLOY_NAME"'")) | .conclusion' | head -n1)"
+          if [ -z "$DEPLOY_CONCLUSION" ]; then
+            echo "::error::deploy-on-update (#213): receiver run $RECEIVER_RUN_ID has no scoped deploy job for '$PRIMARY_DEPLOY_NAME'; expected a 'Deploy $PRIMARY_DEPLOY_NAME' job, found none"
+            exit 1
+          fi
+          if [ "$DEPLOY_CONCLUSION" != "success" ]; then
+            echo "::error::deploy-on-update (#213): scoped deploy job for '$PRIMARY_DEPLOY_NAME' in receiver run $RECEIVER_RUN_ID concluded '$DEPLOY_CONCLUSION', expected 'success'"
+            exit 1
+          fi
+          echo "OK: deploy-on-update (#213) scoped deploy job 'Deploy $PRIMARY_DEPLOY_NAME' concluded success in receiver run $RECEIVER_RUN_ID"
+
   summary:
     name: Suite Summary
     runs-on: ubuntu-latest
