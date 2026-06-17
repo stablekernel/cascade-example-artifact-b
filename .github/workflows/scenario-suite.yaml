@@ -99,7 +99,8 @@ jobs:
           [ -n "$RUN_ID" ] || { echo "::error::no orchestrate run for ${MERGE_SHA}"; exit 1; }
           gh run watch "$RUN_ID" \
             --repo stablekernel/cascade-example-artifact-b \
-            --exit-status
+            --exit-status \
+            --interval 30
 
   dispatch-and-assert:
     name: Dispatch and Assert
@@ -189,7 +190,7 @@ jobs:
           done
           if [ -n "$RUN_ID" ]; then
             echo "Our primary external-update run: ${RUN_ID} (watch is informational)"
-            gh run watch "$RUN_ID" --repo "$PRIMARY_REPO" || \
+            gh run watch "$RUN_ID" --repo "$PRIMARY_REPO" --interval 30 || \
               echo "note: watch on ${RUN_ID} returned non-zero; deferring to slot poll"
           else
             echo "note: could not correlate our run by sentinel; deferring to slot poll"
@@ -202,14 +203,14 @@ jobs:
           # sibling's write into a different slot can never satisfy or clobber it.
           GOT_SHA=""
           GOT_REPO=""
-          for i in $(seq 1 36); do
+          for i in $(seq 1 10); do
             resp="$(gh api "repos/$PRIMARY_REPO/contents/.github/manifest.yaml?ref=main")"
             echo "$resp" | jq -r '.content' | base64 -d > /tmp/primary-manifest.yaml
             GOT_SHA="$(yq eval '.ci.state.'"$PRIMARY_ENV"'.external.'"$PRIMARY_DEPLOY_NAME"'.sha // ""' /tmp/primary-manifest.yaml)"
             GOT_REPO="$(yq eval '.ci.state.'"$PRIMARY_ENV"'.external.'"$PRIMARY_DEPLOY_NAME"'.repo // ""' /tmp/primary-manifest.yaml)"
             [ "$GOT_SHA" = "$SENTINEL" ] && break
             echo "attempt ${i}: primary slot sha='$GOT_SHA' (want '$SENTINEL')"
-            sleep 5
+            sleep 20
           done
           if [ "$GOT_SHA" != "$SENTINEL" ]; then
             echo "::error::sentinel sha did not land in primary state.$PRIMARY_ENV.external.$PRIMARY_DEPLOY_NAME.sha: want '$SENTINEL' got '$GOT_SHA'"
