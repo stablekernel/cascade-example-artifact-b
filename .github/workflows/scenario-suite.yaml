@@ -157,8 +157,14 @@ jobs:
           }
           ensure_primary_env
 
-          DISPATCH_SINCE="$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-            || date -u -v-60S +%Y-%m-%dT%H:%M:%SZ)"
+          # Boundary used only to avoid resolving runs from earlier in this job.
+          # Sibling artifact suites dispatch into the same primary concurrently,
+          # so "newest run since boundary" can resolve a FOREIGN run (a different
+          # deploy_name). We therefore never gate on a sibling run's conclusion;
+          # the unique sentinel landing verbatim in our own slot is the only
+          # authoritative signal (external/command.go:187 writes --sha verbatim).
+          DISPATCH_SINCE="$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v-120S +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run external-update.yaml --repo "$PRIMARY_REPO" --ref main \
             -f source_repo="$GITHUB_REPOSITORY" \
             -f deploy_name="$PRIMARY_DEPLOY_NAME" \
@@ -167,24 +173,36 @@ jobs:
             -f version=v2.0.0 \
             -f artifacts='{"artifact_name":"widget-b-'"$SENTINEL"'"}'
 
+          # Best-effort: surface this dispatch's own run for log triage. Match the
+          # run whose displayTitle carries OUR sentinel so concurrent sibling runs
+          # are never mistaken for ours. A failure here is informational only and
+          # must NOT abort the assertion; the slot poll below is the hard gate.
           RUN_ID=""
-          for i in $(seq 1 30); do
+          for i in $(seq 1 18); do
             RUN_ID="$(gh run list --repo "$PRIMARY_REPO" --workflow=external-update.yaml \
-              --branch=main --created=">=$DISPATCH_SINCE" --limit=1 \
-              --json databaseId --jq '.[0].databaseId // empty')"
+              --branch=main --created=">=$DISPATCH_SINCE" --limit=20 \
+              --json databaseId,displayTitle \
+              --jq 'map(select(.displayTitle | contains("'"$SENTINEL"'"))) | .[0].databaseId // empty')"
             [ -n "$RUN_ID" ] && break
-            echo "attempt ${i}: primary external-update run for this dispatch not yet visible"
+            echo "attempt ${i}: our external-update run (sentinel $SENTINEL) not yet visible"
             sleep 10
           done
-          [ -n "$RUN_ID" ] || { echo "::error::no primary external-update run found for this dispatch"; exit 1; }
-          echo "Found primary external-update run ${RUN_ID}; waiting for completion"
-          gh run watch "$RUN_ID" --repo "$PRIMARY_REPO" --exit-status
+          if [ -n "$RUN_ID" ]; then
+            echo "Our primary external-update run: ${RUN_ID} (watch is informational)"
+            gh run watch "$RUN_ID" --repo "$PRIMARY_REPO" || \
+              echo "note: watch on ${RUN_ID} returned non-zero; deferring to slot poll"
+          else
+            echo "note: could not correlate our run by sentinel; deferring to slot poll"
+          fi
 
-          # Read back the EXACT slot; assert the sentinel landed verbatim and that
-          # .repo records THIS source repo. Poll primary main for the finalize commit.
+          # Hard assertion: poll primary main until OUR sentinel lands verbatim in
+          # OUR slot. fetch each attempt (Contents API at ?ref=main always returns
+          # the current tip, so this is an effective fetch+reset+reread). The slot
+          # key is deploy-name scoped (state.<env>.external.<deploy_name>), so a
+          # sibling's write into a different slot can never satisfy or clobber it.
           GOT_SHA=""
           GOT_REPO=""
-          for i in $(seq 1 24); do
+          for i in $(seq 1 36); do
             resp="$(gh api "repos/$PRIMARY_REPO/contents/.github/manifest.yaml?ref=main")"
             echo "$resp" | jq -r '.content' | base64 -d > /tmp/primary-manifest.yaml
             GOT_SHA="$(yq eval '.ci.state.'"$PRIMARY_ENV"'.external.'"$PRIMARY_DEPLOY_NAME"'.sha // ""' /tmp/primary-manifest.yaml)"
