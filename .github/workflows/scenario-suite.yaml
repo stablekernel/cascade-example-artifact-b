@@ -113,37 +113,47 @@ jobs:
           echo "orchestrate run for ${{ needs.seed.outputs.merge_sha }} passed"
 
       - name: Dispatch External Update on primary
+        id: dispatch
         env:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
           SHA: ${{ needs.seed.outputs.merge_sha }}
         run: |
+          set -euo pipefail
+          # Capture the dispatch instant so the poll only correlates to the run
+          # this step triggers, not an unrelated prior run.
+          TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh api repos/stablekernel/cascade-example-primary/dispatches \
             -X POST \
             -f event_type=external-update \
             -f "client_payload[source]=widget-b" \
             -f "client_payload[sha]=${SHA}" \
             -f "client_payload[version]=0.0.0-suite"
-          echo "Dispatched external-update to stablekernel/cascade-example-primary"
+          echo "dispatch_ts=${TS}" >> "$GITHUB_OUTPUT"
+          echo "Dispatched external-update to stablekernel/cascade-example-primary at ${TS}"
 
-      - name: Poll for primary acknowledgement
+      - name: Wait for primary External Update run to complete
         env:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+          DISPATCH_TS: ${{ steps.dispatch.outputs.dispatch_ts }}
         run: |
-          MAX=20
-          COUNT=0
-          while [ "$COUNT" -lt "$MAX" ]; do
-            STATUS=$(gh api repos/stablekernel/cascade-example-primary/actions/workflows/external-update.yaml/runs \
-              --jq '.workflow_runs[0].status' 2>/dev/null || echo "unknown")
-            echo "attempt ${COUNT}: primary external-update status=${STATUS}"
-            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "in_progress" ]; then
-              echo "Primary acknowledged dispatch."
-              exit 0
-            fi
-            COUNT=$((COUNT + 1))
-            sleep 15
+          set -euo pipefail
+          RUN_ID=""
+          for i in $(seq 1 30); do
+            RUN_ID="$(gh run list \
+              --repo stablekernel/cascade-example-primary \
+              --workflow=external-update.yaml \
+              --created ">=${DISPATCH_TS}" \
+              --json databaseId,status \
+              --jq '.[0].databaseId // empty')"
+            [ -n "$RUN_ID" ] && break
+            echo "attempt ${i}: primary external-update run not yet visible"
+            sleep 10
           done
-          echo "::error::Primary did not acknowledge External Update dispatch within timeout"
-          exit 1
+          [ -n "$RUN_ID" ] || { echo "::error::no primary external-update run created at or after ${DISPATCH_TS}"; exit 1; }
+          echo "Found primary external-update run ${RUN_ID}; waiting for completion"
+          gh run watch "$RUN_ID" \
+            --repo stablekernel/cascade-example-primary \
+            --exit-status
 
   summary:
     name: Suite Summary
