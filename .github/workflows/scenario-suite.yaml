@@ -107,53 +107,101 @@ jobs:
     needs: [seed, wait-build]
     permissions:
       contents: read
+    env:
+      PRIMARY_REPO: stablekernel/cascade-example-primary
+      # Primary-side external-deploy key and environment for THIS satellite. The
+      # cascade external update consumer rejects a deploy_name/environment that is
+      # not present in the primary config (external/command.go:139,150); primary's
+      # manifest external[].deploys[].name == "artifact-b", envs [staging, prod].
+      PRIMARY_DEPLOY_NAME: artifact-b
+      PRIMARY_ENV: staging
     steps:
       - name: Assert orchestrate completed
         run: |
           echo "orchestrate run for ${{ needs.seed.outputs.merge_sha }} passed"
 
-      - name: Dispatch External Update on primary
+      - name: Assert sentinel external-update lands verbatim in primary state
         id: dispatch
         env:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
-          SHA: ${{ needs.seed.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          # Capture the dispatch instant so the poll only correlates to the run
-          # this step triggers, not an unrelated prior run.
-          TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          gh api repos/stablekernel/cascade-example-primary/dispatches \
-            -X POST \
-            -f event_type=external-update \
-            -f "client_payload[source]=widget-b" \
-            -f "client_payload[sha]=${SHA}" \
-            -f "client_payload[version]=0.0.0-suite"
-          echo "dispatch_ts=${TS}" >> "$GITHUB_OUTPUT"
-          echo "Dispatched external-update to stablekernel/cascade-example-primary at ${TS}"
 
-      - name: Wait for primary External Update run to complete
-        env:
-          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
-          DISPATCH_TS: ${{ steps.dispatch.outputs.dispatch_ts }}
-        run: |
-          set -euo pipefail
+          # Unique sentinel SHA. The dispatched --sha lands verbatim in primary
+          # state.<env>.external.<deploy_name>.sha (external/command.go:187), so the
+          # value itself is the correlation key - never run ordering.
+          SENTINEL="b$(date -u +%Y%m%d%H%M%S)$RANDOM"
+          echo "Sentinel sha for this run: $SENTINEL"
+
+          # primary's external update requires state.<env> to pre-exist
+          # (external/command.go:149). Seed state.staging on primary only when
+          # absent, via the Contents API, so we never clobber live state.
+          ensure_primary_env() {
+            local tmp resp cur_sha b64
+            tmp="$(mktemp)"
+            resp="$(gh api "repos/$PRIMARY_REPO/contents/.github/manifest.yaml?ref=main")"
+            cur_sha="$(echo "$resp" | jq -r '.sha')"
+            echo "$resp" | jq -r '.content' | base64 -d > "$tmp"
+            if [ "$(yq eval '.ci.state.'"$PRIMARY_ENV"' // ""' "$tmp")" != "" ]; then
+              echo "primary state.$PRIMARY_ENV already present; no seed needed"
+              return 0
+            fi
+            echo "seeding primary state.$PRIMARY_ENV (absent)"
+            yq eval -i '.ci.state.'"$PRIMARY_ENV"'.version = "v0.0.0-seed"' "$tmp"
+            b64="$(base64 -w0 "$tmp" 2>/dev/null || base64 "$tmp" | tr -d '\n')"
+            gh api "repos/$PRIMARY_REPO/contents/.github/manifest.yaml" -X PUT \
+              -f "message=chore: seed $PRIMARY_ENV state for external-update test [skip ci]" \
+              -f "content=$b64" \
+              -f "branch=main" \
+              -f "sha=$cur_sha" >/dev/null
+          }
+          ensure_primary_env
+
+          DISPATCH_SINCE="$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v-60S +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run external-update.yaml --repo "$PRIMARY_REPO" --ref main \
+            -f source_repo="$GITHUB_REPOSITORY" \
+            -f deploy_name="$PRIMARY_DEPLOY_NAME" \
+            -f environment="$PRIMARY_ENV" \
+            -f sha="$SENTINEL" \
+            -f version=v2.0.0 \
+            -f artifacts='{"artifact_name":"widget-b-'"$SENTINEL"'"}'
+
           RUN_ID=""
           for i in $(seq 1 30); do
-            RUN_ID="$(gh run list \
-              --repo stablekernel/cascade-example-primary \
-              --workflow=external-update.yaml \
-              --created ">=${DISPATCH_TS}" \
-              --json databaseId,status \
-              --jq '.[0].databaseId // empty')"
+            RUN_ID="$(gh run list --repo "$PRIMARY_REPO" --workflow=external-update.yaml \
+              --branch=main --created=">=$DISPATCH_SINCE" --limit=1 \
+              --json databaseId --jq '.[0].databaseId // empty')"
             [ -n "$RUN_ID" ] && break
-            echo "attempt ${i}: primary external-update run not yet visible"
+            echo "attempt ${i}: primary external-update run for this dispatch not yet visible"
             sleep 10
           done
-          [ -n "$RUN_ID" ] || { echo "::error::no primary external-update run created at or after ${DISPATCH_TS}"; exit 1; }
+          [ -n "$RUN_ID" ] || { echo "::error::no primary external-update run found for this dispatch"; exit 1; }
           echo "Found primary external-update run ${RUN_ID}; waiting for completion"
-          gh run watch "$RUN_ID" \
-            --repo stablekernel/cascade-example-primary \
-            --exit-status
+          gh run watch "$RUN_ID" --repo "$PRIMARY_REPO" --exit-status
+
+          # Read back the EXACT slot; assert the sentinel landed verbatim and that
+          # .repo records THIS source repo. Poll primary main for the finalize commit.
+          GOT_SHA=""
+          GOT_REPO=""
+          for i in $(seq 1 24); do
+            resp="$(gh api "repos/$PRIMARY_REPO/contents/.github/manifest.yaml?ref=main")"
+            echo "$resp" | jq -r '.content' | base64 -d > /tmp/primary-manifest.yaml
+            GOT_SHA="$(yq eval '.ci.state.'"$PRIMARY_ENV"'.external.'"$PRIMARY_DEPLOY_NAME"'.sha // ""' /tmp/primary-manifest.yaml)"
+            GOT_REPO="$(yq eval '.ci.state.'"$PRIMARY_ENV"'.external.'"$PRIMARY_DEPLOY_NAME"'.repo // ""' /tmp/primary-manifest.yaml)"
+            [ "$GOT_SHA" = "$SENTINEL" ] && break
+            echo "attempt ${i}: primary slot sha='$GOT_SHA' (want '$SENTINEL')"
+            sleep 5
+          done
+          if [ "$GOT_SHA" != "$SENTINEL" ]; then
+            echo "::error::sentinel sha did not land in primary state.$PRIMARY_ENV.external.$PRIMARY_DEPLOY_NAME.sha: want '$SENTINEL' got '$GOT_SHA'"
+            exit 1
+          fi
+          if [ "$GOT_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::primary slot .repo mismatch: want '$GITHUB_REPOSITORY' got '$GOT_REPO'"
+            exit 1
+          fi
+          echo "OK: sentinel $SENTINEL landed verbatim in primary state.$PRIMARY_ENV.external.$PRIMARY_DEPLOY_NAME (repo=$GOT_REPO)"
 
   summary:
     name: Suite Summary
