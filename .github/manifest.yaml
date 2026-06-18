@@ -18,7 +18,7 @@ ci:
       token: CASCADE_STATE_TOKEN
   state:
     prerelease:
-      sha: 771577850bebff99ed65ae609e255702e9bd0907
-      version: v0.2.1-rc.1
-      committed_at: "2026-06-18T01:23:50Z"
+      sha: d4906b15ef9f0291b461a097484501a66cde3112
+      version: v0.1.0-rc.0
+      committed_at: "2026-06-18T13:59:40Z"
       committed_by: joshua-temple
