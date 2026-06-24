@@ -28,7 +28,21 @@ jobs:
       pull-requests: write
     outputs:
       merge_sha: ${{ steps.merge.outputs.merge_sha }}
+      # Captured before the PR merge that triggers orchestrate, so every run the
+      # suite goes on to cause lands at or after this instant. The reconcile job
+      # enumerates every run this repo produced since window-start and fails if
+      # any is unaccounted for in the ledger.
+      window-start: ${{ steps.window.outputs.window-start }}
     steps:
+      # The reconcile window opens here, before the first PR merge or dispatch.
+      - name: Open reconcile window
+        id: window
+        run: |
+          set -euo pipefail
+          WINDOW_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "window-start=$WINDOW_START" >> "$GITHUB_OUTPUT"
+          echo "reconcile window opened at $WINDOW_START"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -78,8 +92,11 @@ jobs:
     needs: [seed]
     permissions:
       actions: write
+    outputs:
+      orchestrate_run_id: ${{ steps.resolve.outputs.orchestrate_run_id }}
     steps:
       - name: Wait for orchestrate run keyed on merge SHA
+        id: resolve
         env:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
           MERGE_SHA: ${{ needs.seed.outputs.merge_sha }}
@@ -97,10 +114,30 @@ jobs:
             sleep 60
           done
           [ -n "$RUN_ID" ] || { echo "::error::no orchestrate run for ${MERGE_SHA}"; exit 1; }
+          # Surface the resolved id so the next step registers it in the reconcile
+          # ledger before the watch gate, keeping it accounted for even if the
+          # watch is interrupted.
+          echo "orchestrate_run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
           gh run watch "$RUN_ID" \
             --repo stablekernel/cascade-example-artifact-b \
             --exit-status \
             --interval 60
+
+      # The merged scenario PR triggers exactly one run in this repo: the push
+      # Orchestrate run resolved above (build-widget and deploy-artifact-b are
+      # workflow_call jobs inside it, not separate runs; the external-update
+      # receiver and its scoped deploy run live in primary, out of this repo's
+      # reconcile scope). Register it so reconcile fails if it concluded other
+      # than success. upload: 'true' carries this job's ledger to reconcile as an
+      # artifact (multi-job suite).
+      - name: Register orchestrate run
+        if: steps.resolve.outputs.orchestrate_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.resolve.outputs.orchestrate_run_id }}
+          expected-conclusion: success
+          reason: orchestrate-push
+          upload: 'true'
 
   dispatch-and-assert:
     name: Dispatch and Assert
@@ -286,3 +323,26 @@ jobs:
           echo "| seed | ${SEED_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| wait-build | ${WAIT_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| dispatch-and-assert | ${DISPATCH_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------
+  # Reconcile gate: structural coverage backstop. The suite's own asserts above
+  # still gate each run they remember to wait on; this job is additive. It
+  # enumerates EVERY run this repo produced since window-start (captured in the
+  # seed job before the PR merge) and fails if any is unaccounted for in the
+  # ledger the register-run steps uploaded - an unregistered non-success run, or
+  # a registered run that concluded other than its expected conclusion. That
+  # turns any fire-and-forget run the suite forgot to gate into a hard red.
+  # ---------------------------------------------------------------------
+  reconcile:
+    name: Reconcile scenario-window runs
+    needs: [seed, wait-build, dispatch-and-assert, summary]
+    if: always()
+    uses: stablekernel/cascade/.github/workflows/fleet-reconcile.yaml@main
+    permissions:
+      contents: read
+      actions: read
+    with:
+      window-start: ${{ needs.seed.outputs.window-start }}
+      # Artifact mode: each register-run step uploaded a per-job ledger under
+      # the default cascade-run-ledger-* name; reconcile globs and merges them.
+      cascade-ref: main
