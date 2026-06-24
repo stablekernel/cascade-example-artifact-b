@@ -16,6 +16,8 @@ ci:
       repo: stablekernel/cascade-example-primary
       workflow: external-update.yaml
       token: CASCADE_STATE_TOKEN
+      deploy_name: artifact-b
+      environment: staging
   state:
     prerelease:
       sha: de3ea9acc5505d9c1b901f0a5fb881c34137e138
