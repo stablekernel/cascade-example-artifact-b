@@ -158,6 +158,56 @@ jobs:
         run: |
           echo "orchestrate run for ${{ needs.seed.outputs.merge_sha }} passed"
 
+      - name: Checkout regenerated workflows
+        uses: actions/checkout@v4
+
+      # The manifest sets notify.deploy_name and notify.environment as explicit
+      # overrides. This satellite is build-only (one build "shared", no deploys, no
+      # environments), so WITHOUT the overrides the generator would emit
+      # deploy_name 'shared' and environment 'dev' in the Notify Primary Repo step
+      # (the build-name / default-env fallbacks). With the overrides it must emit
+      # 'artifact-b' and 'staging'. The fleet repin regenerates and commits
+      # orchestrate.yaml from this manifest before the suite runs, so the
+      # checked-out file is the authoritative regenerated artifact. Assert the
+      # overrides flowed through generation and the unconfigured defaults did not.
+      - name: Assert notify overrides reach the generated dispatch
+        env:
+          EXPECTED_DEPLOY_NAME: artifact-b
+          EXPECTED_ENVIRONMENT: staging
+          FALLBACK_DEPLOY_NAME: shared
+          FALLBACK_ENVIRONMENT: dev
+        run: |
+          set -euo pipefail
+          ORCHESTRATE=".github/workflows/orchestrate.yaml"
+          [ -f "$ORCHESTRATE" ] || { echo "::error::$ORCHESTRATE missing"; exit 1; }
+
+          # The Notify Primary Repo dispatch inputs are emitted as
+          #   deploy_name: '<value>',
+          #   environment: '<value>',
+          got_deploy="$(grep -oE "deploy_name: '[^']*'" "$ORCHESTRATE" | head -n1 | sed "s/.*'\\(.*\\)'.*/\\1/")"
+          got_env="$(grep -oE "environment: '[^']*'" "$ORCHESTRATE" | head -n1 | sed "s/.*'\\(.*\\)'.*/\\1/")"
+
+          if [ "$got_deploy" != "$EXPECTED_DEPLOY_NAME" ]; then
+            echo "::error::notify.deploy_name override did not reach dispatch: got '$got_deploy' want '$EXPECTED_DEPLOY_NAME'"
+            exit 1
+          fi
+          if [ "$got_env" != "$EXPECTED_ENVIRONMENT" ]; then
+            echo "::error::notify.environment override did not reach dispatch: got '$got_env' want '$EXPECTED_ENVIRONMENT'"
+            exit 1
+          fi
+          # Guard against a regression where the unconfigured fallbacks leak through.
+          if [ "$got_deploy" = "$FALLBACK_DEPLOY_NAME" ] || [ "$got_env" = "$FALLBACK_ENVIRONMENT" ]; then
+            echo "::error::generated dispatch carried the unconfigured fallback rather than the override"
+            exit 1
+          fi
+          echo "OK: notify overrides reached dispatch (deploy_name=$got_deploy environment=$got_env)"
+          {
+            echo "## Notify overrides"
+            echo "- generated deploy_name == override ($EXPECTED_DEPLOY_NAME): yes"
+            echo "- generated environment == override ($EXPECTED_ENVIRONMENT): yes"
+            echo "- unconfigured fallbacks ($FALLBACK_DEPLOY_NAME/$FALLBACK_ENVIRONMENT) not used: yes"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Assert sentinel external-update lands verbatim in primary state
         id: dispatch
         env:
