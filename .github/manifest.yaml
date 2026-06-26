@@ -2,7 +2,7 @@ ci:
   config:
     schema_version: 1
     trunk_branch: main
-    cli_version: v0.5.0-rc.9
+    cli_version: v0.5.0-rc.10
     state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
     manifest_file: .github/manifest.yaml
     manifest_key: ci
@@ -21,6 +21,6 @@ ci:
   state:
     prerelease:
       sha: 2ceae9ed9c0e713de2d5c6f26dfa1994cbfb1ed5
-      version: v0.1.0-rc.0
+      version: v0.5.0-rc.10
       committed_at: "2026-06-26T03:40:27Z"
       committed_by: joshua-temple
