@@ -34,6 +34,41 @@ jobs:
       # any is unaccounted for in the ledger.
       window-start: ${{ steps.window.outputs.window-start }}
     steps:
+      - name: Install gh transient-retry wrapper
+        run: |
+          cat > "$RUNNER_TEMP/gh-retry.sh" <<'GHRETRY'
+          _gh_is_transient() {
+            local out="$1"
+            if printf '%s' "$out" | grep -qiE 'HTTP 5[0-9][0-9]|HTTP 429|HTTP 401|Bad credentials|was submitted too quickly|secondary rate limit'; then
+              return 0
+            fi
+            if printf '%s' "$out" | grep -qiE 'HTTP 403'; then
+              if printf '%s' "$out" | grep -qiE 'rate limit|secondary|abuse|too quickly'; then
+                return 0
+              fi
+            fi
+            return 1
+          }
+          gh() {
+            local attempt=1 max="${GH_RETRY_MAX:-5}" delay="${GH_RETRY_BASE_DELAY:-3}" out rc
+            while :; do
+              out="$(command gh "$@" 2>&1)" && rc=0 || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                printf '%s\n' "$out"
+                return 0
+              fi
+              if [ "$attempt" -ge "$max" ] || ! _gh_is_transient "$out"; then
+                printf '%s\n' "$out" >&2
+                return "$rc"
+              fi
+              printf 'gh: transient error on attempt %d/%d, retrying in %ds\n%s\n' "$attempt" "$max" "$delay" "$out" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+          GHRETRY
+          echo "BASH_ENV=$RUNNER_TEMP/gh-retry.sh" >> "$GITHUB_ENV"
       # The reconcile window opens here, before the first PR merge or dispatch.
       - name: Open reconcile window
         id: window
@@ -95,6 +130,41 @@ jobs:
     outputs:
       orchestrate_run_id: ${{ steps.resolve.outputs.orchestrate_run_id }}
     steps:
+      - name: Install gh transient-retry wrapper
+        run: |
+          cat > "$RUNNER_TEMP/gh-retry.sh" <<'GHRETRY'
+          _gh_is_transient() {
+            local out="$1"
+            if printf '%s' "$out" | grep -qiE 'HTTP 5[0-9][0-9]|HTTP 429|HTTP 401|Bad credentials|was submitted too quickly|secondary rate limit'; then
+              return 0
+            fi
+            if printf '%s' "$out" | grep -qiE 'HTTP 403'; then
+              if printf '%s' "$out" | grep -qiE 'rate limit|secondary|abuse|too quickly'; then
+                return 0
+              fi
+            fi
+            return 1
+          }
+          gh() {
+            local attempt=1 max="${GH_RETRY_MAX:-5}" delay="${GH_RETRY_BASE_DELAY:-3}" out rc
+            while :; do
+              out="$(command gh "$@" 2>&1)" && rc=0 || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                printf '%s\n' "$out"
+                return 0
+              fi
+              if [ "$attempt" -ge "$max" ] || ! _gh_is_transient "$out"; then
+                printf '%s\n' "$out" >&2
+                return "$rc"
+              fi
+              printf 'gh: transient error on attempt %d/%d, retrying in %ds\n%s\n' "$attempt" "$max" "$delay" "$out" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+          GHRETRY
+          echo "BASH_ENV=$RUNNER_TEMP/gh-retry.sh" >> "$GITHUB_ENV"
       - name: Wait for orchestrate run keyed on merge SHA
         id: resolve
         env:
@@ -103,7 +173,7 @@ jobs:
         run: |
           set -euo pipefail
           RUN_ID=""
-          for i in $(seq 1 6); do
+          for _i in $(seq 1 6); do
             RUN_ID="$(gh run list \
               --repo stablekernel/cascade-example-artifact-b \
               --workflow=orchestrate.yaml \
@@ -154,6 +224,41 @@ jobs:
       PRIMARY_DEPLOY_NAME: artifact-b
       PRIMARY_ENV: staging
     steps:
+      - name: Install gh transient-retry wrapper
+        run: |
+          cat > "$RUNNER_TEMP/gh-retry.sh" <<'GHRETRY'
+          _gh_is_transient() {
+            local out="$1"
+            if printf '%s' "$out" | grep -qiE 'HTTP 5[0-9][0-9]|HTTP 429|HTTP 401|Bad credentials|was submitted too quickly|secondary rate limit'; then
+              return 0
+            fi
+            if printf '%s' "$out" | grep -qiE 'HTTP 403'; then
+              if printf '%s' "$out" | grep -qiE 'rate limit|secondary|abuse|too quickly'; then
+                return 0
+              fi
+            fi
+            return 1
+          }
+          gh() {
+            local attempt=1 max="${GH_RETRY_MAX:-5}" delay="${GH_RETRY_BASE_DELAY:-3}" out rc
+            while :; do
+              out="$(command gh "$@" 2>&1)" && rc=0 || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                printf '%s\n' "$out"
+                return 0
+              fi
+              if [ "$attempt" -ge "$max" ] || ! _gh_is_transient "$out"; then
+                printf '%s\n' "$out" >&2
+                return "$rc"
+              fi
+              printf 'gh: transient error on attempt %d/%d, retrying in %ds\n%s\n' "$attempt" "$max" "$delay" "$out" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+          GHRETRY
+          echo "BASH_ENV=$RUNNER_TEMP/gh-retry.sh" >> "$GITHUB_ENV"
       - name: Assert orchestrate completed
         run: |
           echo "orchestrate run for ${{ needs.seed.outputs.merge_sha }} passed"
@@ -367,12 +472,14 @@ jobs:
           WAIT_RESULT: ${{ needs.wait-build.result }}
           DISPATCH_RESULT: ${{ needs.dispatch-and-assert.result }}
         run: |
-          echo "## cascade-example-artifact-b Scenario Suite" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Stage | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| seed | ${SEED_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| wait-build | ${WAIT_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| dispatch-and-assert | ${DISPATCH_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## cascade-example-artifact-b Scenario Suite"
+            echo "| Stage | Result |"
+            echo "|-------|--------|"
+            echo "| seed | ${SEED_RESULT} |"
+            echo "| wait-build | ${WAIT_RESULT} |"
+            echo "| dispatch-and-assert | ${DISPATCH_RESULT} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------
   # Reconcile gate: structural coverage backstop. The suite's own asserts above
