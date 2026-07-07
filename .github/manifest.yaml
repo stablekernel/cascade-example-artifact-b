@@ -2,8 +2,8 @@ ci:
   config:
     schema_version: 1
     trunk_branch: main
-    cli_version: v0.10.0-rc.0
-    cli_version_sha: d61d641f4feb12192d9d8eb75b34c414df7da798
+    cli_version: v0.11.0-rc.0
+    cli_version_sha: 2cd506a7b3068f8a8fa6475458593129992e6f3d
     state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
     manifest_file: .github/manifest.yaml
     manifest_key: ci
@@ -22,6 +22,6 @@ ci:
   state:
     prerelease:
       sha: 76989e8adba94b65fdacd29c681808df354d2ba0
-      version: v0.1.0-rc.0
+      version: v0.11.0-rc.0
       committed_at: "2026-07-07T03:52:34Z"
       committed_by: joshua-temple
