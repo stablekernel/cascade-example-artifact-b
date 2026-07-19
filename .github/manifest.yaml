@@ -22,6 +22,6 @@ ci:
   state:
     prerelease:
       sha: f784cbc5d1e45ddab056456beb0905ac3734221f
-      version: v0.1.0-rc.0
+      version: v0.16.5-rc.1
       committed_at: "2026-07-19T14:11:08Z"
       committed_by: joshua-temple
